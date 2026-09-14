@@ -20,17 +20,31 @@ import { spawnSync } from 'node:child_process';
 /** stopped からの起動を待つ上限 */
 const TIMEOUT_MS = 30_000;
 
-const result = spawnSync('fly', ['status', '--json'], { encoding: 'utf8' });
+/**
+ * マシン一覧を取る。
+ *
+ * 手元では `fly` だが、GitHub Actions の setup-flyctl は `flyctl` の名前で
+ * PATH に置く。どちらでも動くように順に試す。
+ */
+const readFlyStatus = () => {
+  const candidates = [process.env.FLY_BINARY, 'fly', 'flyctl'].filter(Boolean);
+  let lastProblem = '見つかりませんでした';
 
-if (result.status !== 0) {
-  console.error('fly status の取得に失敗しました。');
-  if (result.stderr) console.error(result.stderr.trim());
+  for (const binary of candidates) {
+    const result = spawnSync(binary, ['status', '--json'], { encoding: 'utf8' });
+    if (result.status === 0) return result.stdout;
+
+    // 実行できなかった (未インストールなど) 場合は次の候補へ
+    lastProblem = result.error?.message ?? result.stderr?.trim() ?? `終了コード ${result.status}`;
+  }
+
+  console.error(`fly status の取得に失敗しました (${candidates.join(' / ')}): ${lastProblem}`);
   process.exit(1);
-}
+};
 
 let status;
 try {
-  status = JSON.parse(result.stdout);
+  status = JSON.parse(readFlyStatus());
 } catch (error) {
   console.error(`fly status の JSON を解析できませんでした: ${error.message}`);
   process.exit(1);
