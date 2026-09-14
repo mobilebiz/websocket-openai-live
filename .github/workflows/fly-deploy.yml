@@ -1,0 +1,27 @@
+# See https://fly.io/docs/app-guides/continuous-deployment-with-github-actions/
+
+name: Fly Deploy
+on:
+  push:
+    branches:
+      - main
+jobs:
+  deploy:
+    name: Deploy app
+    runs-on: ubuntu-latest
+    concurrency: deploy-group # 同時に 1 つだけ走らせる
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+
+      # デプロイ直後のマシンは stopped 状態で、この状態からの初回リクエストは
+      # 約 7.5 秒かかる。Vonage の answer_url は 5 秒しか待たないため、
+      # そのまま着信すると切断される。ローカルの npm run deploy と同じく
+      # ここで起こしておく (起こした後のアイドルは suspend になり復帰は約 0.5 秒)。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/warmup.js
