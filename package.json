@@ -1,0 +1,26 @@
+{
+  "name": "websocket-openai-live",
+  "version": "0.1.0",
+  "author": "Katsumi Takahashi",
+  "license": "MIT",
+  "type": "module",
+  "description": "Vonage Voice API の音声ストリームと OpenAI Live API (GPT-Live) を中継するサーバー",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "fly deploy && node scripts/warmup.js",
+    "warmup": "node scripts/warmup.js"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^9.0.0",
+    "@fastify/websocket": "^11.3.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.12.1",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "pino-pretty": "^13.1.3"
+  }
+}

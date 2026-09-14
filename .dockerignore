@@ -1,0 +1,14 @@
+/.git
+/.github
+/node_modules
+/docs
+/scripts
+.dockerignore
+Dockerfile
+fly.toml
+README.md
+CLAUDE.md
+.env
+.env.*
+*.pem
+.DS_Store
