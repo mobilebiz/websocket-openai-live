@@ -5,6 +5,16 @@ const FORECAST_URL = 'https://api.openweathermap.org/data/2.5/forecast';
 const MAX_DAYS_AHEAD = 4;
 
 /**
+ * OpenWeatherMap は地名の接尾辞に厳しい。
+ * 「釧路」「高知」では引けず、「釧路市」「高知県」なら引ける。
+ * モデルがどちらの言い方をしてくるか分からないので、順に試す。
+ */
+const LOCATION_SUFFIXES = ['市', '県', '府', '都'];
+
+/** すでに接尾辞が付いていれば補わない */
+const HAS_SUFFIX = /[都道府県市区町村]$/;
+
+/**
  * delegation.responses.tools にそのまま載せる定義 (Responses API の形式)。
  *
  * strict: true にしているので、
@@ -23,7 +33,8 @@ export const definition = {
     properties: {
       location: {
         type: 'string',
-        description: '都道府県名, e.g. 東京都,大阪,北海道'
+        description:
+          '市区町村名または都道府県名。ユーザーが言った地名をそのまま渡してください, e.g. 東京都, 高知県, 釧路市'
       },
       days_ahead: {
         type: ['integer', 'null'],
@@ -53,48 +64,93 @@ const addDays = (isoDate, days) => {
 };
 
 /**
- * OpenWeatherMap を叩くための URL を組み立てる。
- * @param {string} base
- * @param {string} location
- * @param {string} apiKey
+ * OpenWeatherMap を叩く。地名が見つからなければ接尾辞を補って retry する。
+ *
+ * @returns {Promise<{ data: object, name: string } | { error: string }>}
  */
-const buildUrl = (base, location, apiKey) => {
-  const url = new URL(base);
-  url.searchParams.set('q', `${location},JP`); // 国コードを付けて検索精度を上げる
-  url.searchParams.set('appid', apiKey);
-  url.searchParams.set('units', 'metric');
-  url.searchParams.set('lang', 'ja');
-  return url;
+const fetchWeather = async (base, location, apiKey, log) => {
+  const candidates = HAS_SUFFIX.test(location)
+    ? [location]
+    : [location, ...LOCATION_SUFFIXES.map((suffix) => `${location}${suffix}`)];
+
+  for (const name of candidates) {
+    const url = new URL(base);
+    url.searchParams.set('q', `${name},JP`); // 国コードを付けて検索精度を上げる
+    url.searchParams.set('appid', apiKey);
+    url.searchParams.set('units', 'metric');
+    url.searchParams.set('lang', 'ja');
+
+    const response = await fetch(url);
+
+    if (response.ok) return { data: await response.json(), name };
+    if (response.status !== 404) {
+      log.error({ status: response.status, name }, '天気情報の取得に失敗しました');
+      return { error: `天気情報の取得に失敗しました (${response.status})。` };
+    }
+  }
+
+  return {
+    error: `${location} の天気情報が見つかりませんでした。市区町村名か都道府県名を指定してください。`
+  };
 };
+
+/** その日ぶんの予報エントリを抜き出す */
+const entriesOfDay = (forecast, daysAhead) => {
+  const offset = forecast.city?.timezone ?? 0;
+  const target = addDays(localDate(Math.floor(Date.now() / 1000), offset), daysAhead);
+  return {
+    offset,
+    target,
+    entries: (forecast.list ?? []).filter((entry) => localDate(entry.dt, offset) === target)
+  };
+};
+
+/** 3 時間刻みのエントリから、その日の最低・最高気温を出す */
+const temperatureRange = (entries) => {
+  const temps = entries.map((entry) => entry.main.temp);
+  return { min: Math.round(Math.min(...temps)), max: Math.round(Math.max(...temps)) };
+};
+
+/** 正午に最も近いエントリを代表として選ぶ */
+const nearestNoon = (entries, offset) =>
+  entries.reduce((best, entry) =>
+    Math.abs(((entry.dt + offset) % 86400) - 43200) <
+    Math.abs(((best.dt + offset) % 86400) - 43200)
+      ? entry
+      : best
+  );
 
 /**
- * レスポンスの異常を、そのまま読み上げられるメッセージに変換する。
- * @param {Response} response
- * @param {string} location
- * @param {import('fastify').FastifyBaseLogger} log
+ * 今日の実況を取る。
+ *
+ * 実況 API の temp_min / temp_max は観測時点の振れ幅でしかなく、
+ * その日の最低・最高気温ではない (同じ値になることが多く、読み上げると誤解を招く)。
+ * 予報からその日の範囲を補って添える。
  */
-const toError = (response, location, log) => {
-  if (response.status === 404) {
-    return {
-      error: `${location} の天気情報が見つかりませんでした。正しい都道府県名を指定してください。`
-    };
-  }
-  log.error({ status: response.status }, '天気情報の取得に失敗しました');
-  return { error: `天気情報の取得に失敗しました (${response.status})。` };
-};
-
-/** 今日の実況を取る */
 const fetchCurrent = async (location, apiKey, log) => {
-  const response = await fetch(buildUrl(CURRENT_URL, location, apiKey));
-  if (!response.ok) return toError(response, location, log);
+  const [current, forecast] = await Promise.all([
+    fetchWeather(CURRENT_URL, location, apiKey, log),
+    fetchWeather(FORECAST_URL, location, apiKey, log)
+  ]);
 
-  const data = await response.json();
+  if (current.error) return current;
+
+  const { data, name } = current;
   const date = localDate(data.dt, data.timezone ?? 0);
+
+  let range = '';
+  if (!forecast.error) {
+    const { entries } = entriesOfDay(forecast.data, 0);
+    if (entries.length > 0) {
+      const { min, max } = temperatureRange(entries);
+      range = `、この先の予想は最低${min}℃〜最高${max}℃`;
+    }
+  }
 
   return {
     summary:
-      `${location}の${date}の天気は${data.weather[0].description}、` +
-      `現在の気温は${data.main.temp}℃（最低${data.main.temp_min}℃〜最高${data.main.temp_max}℃）、` +
+      `${name}の${date}の天気は${data.weather[0].description}、` +
+      `現在の気温は${data.main.temp}℃${range}、` +
       `湿度${data.main.humidity}%、風速${data.wind.speed}m/sです。`
   };
 };
@@ -106,31 +162,24 @@ const fetchCurrent = async (location, apiKey, log) => {
  * 最低・最高気温にまとめ、代表の天気には正午に最も近い時刻のものを使う。
  */
 const fetchForecast = async (location, apiKey, daysAhead, log) => {
-  const response = await fetch(buildUrl(FORECAST_URL, location, apiKey));
-  if (!response.ok) return toError(response, location, log);
+  const forecast = await fetchWeather(FORECAST_URL, location, apiKey, log);
+  if (forecast.error) return forecast;
 
-  const data = await response.json();
-  const offset = data.city?.timezone ?? 0;
-  const target = addDays(localDate(Math.floor(Date.now() / 1000), offset), daysAhead);
-
-  const entries = (data.list ?? []).filter((entry) => localDate(entry.dt, offset) === target);
+  const { offset, target, entries } = entriesOfDay(forecast.data, daysAhead);
 
   if (entries.length === 0) {
     return {
-      error: `${location}の${dayLabel(daysAhead)}（${target}）の予報は取得できませんでした。予報は${MAX_DAYS_AHEAD}日先までです。`
+      error: `${forecast.name}の${dayLabel(daysAhead)}（${target}）の予報は取得できませんでした。予報は${MAX_DAYS_AHEAD}日先までです。`
     };
   }
 
-  const temps = entries.map((entry) => entry.main.temp);
-  const noon = entries.reduce((best, entry) => {
-    const hour = (entry.dt + offset) % 86400;
-    return Math.abs(hour - 43200) < Math.abs(((best.dt + offset) % 86400) - 43200) ? entry : best;
-  });
+  const { min, max } = temperatureRange(entries);
+  const noon = nearestNoon(entries, offset);
 
   return {
     summary:
-      `${location}の${dayLabel(daysAhead)}（${target}）の天気は${noon.weather[0].description}、` +
-      `気温は最低${Math.round(Math.min(...temps))}℃〜最高${Math.round(Math.max(...temps))}℃、` +
+      `${forecast.name}の${dayLabel(daysAhead)}（${target}）の天気は${noon.weather[0].description}、` +
+      `気温は最低${min}℃〜最高${max}℃、` +
       `湿度${noon.main.humidity}%、風速${noon.wind.speed}m/sの見込みです。`
   };
 };
@@ -146,7 +195,7 @@ export const handler = async ({ location, days_ahead: daysAhead }, { config, log
     return { error: 'OpenWeatherMap の API キー (OPEN_WEATHER_API_KEY) が設定されていません。' };
   }
 
-  // strict でも値の範囲までは縛れないので、ここで丸める
+  // strict でも値の範囲までは縛れないので、ここで弾く
   const days = Number.isInteger(daysAhead) ? daysAhead : 0;
   if (days < 0 || days > MAX_DAYS_AHEAD) {
     return { error: `天気は今日から${MAX_DAYS_AHEAD}日先までしか取得できません。` };
