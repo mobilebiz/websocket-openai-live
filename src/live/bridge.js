@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 
 import { FRAME_MS, FrameSplitter, frameBytes } from '../audio/frames.js';
+import { executeTool } from '../tools/index.js';
 import {
   GREETING_EVENT_ID,
   buildGreeting,
@@ -78,6 +79,11 @@ export const createBridge = ({ config, connection, call, log, now = () => Date.n
   /** ユーザーが話し終えてから、まだアシスタントが話し始めていない */
   let awaitingReply = false;
 
+  /** 実行中のツールの本数。全部返し終えてから応答を再開させる */
+  let runningTools = 0;
+  /** 応答の再開を抑止する (転送のように通話が離れる操作のとき) */
+  let skipResponseAfterTools = false;
+
   const VONAGE_FRAME_BYTES = frameBytes(config.audioRate);
   // GPT-Live は可変長で音声を返してくるので、Vonage が期待する 20ms フレームに切り直す
   const outbound = new FrameSplitter(VONAGE_FRAME_BYTES);
@@ -146,6 +152,51 @@ export const createBridge = ({ config, connection, call, log, now = () => Date.n
       },
       '音声の到着ペース (1.0 なら実時間。大きいほど先行して届いている)'
     );
+  };
+
+  /**
+   * ツールを実行し、結果を返して応答を再開させる。
+   *
+   * ツールを呼ぶのは音声モデルではなくバックエンド (responses) なので、
+   * 呼び出しは `response.event` の入れ子で届く。結果を積む (`response.item.create`) だけでは
+   * 応答は再開せず、`response.create` を別途送る必要がある。
+   *
+   * 保留中のツール結果は「全部」返してから再開させる決まりなので、実行中の本数を数え、
+   * 最後の 1 本が終わったときだけ再開させる。
+   *
+   * @param {{ call_id: string, name: string, arguments: string }} item
+   */
+  const runTool = async (item) => {
+    runningTools += 1;
+
+    try {
+      const { output, skipResponse } = await executeTool(item.name, item.arguments, {
+        config,
+        callUuid: call.uuid,
+        log
+      });
+
+      log.info({ tool: item.name, output }, 'ツールを実行しました');
+      // 転送のように通話自体が離れる操作では追加の応答を求めない
+      if (skipResponse) skipResponseAfterTools = true;
+
+      sendToLive({
+        type: 'response.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: item.call_id,
+          output: JSON.stringify(output)
+        }
+      });
+    } catch (error) {
+      log.error({ err: error, tool: item.name }, 'ツール結果の返却に失敗しました');
+    } finally {
+      runningTools -= 1;
+      if (runningTools === 0) {
+        if (!skipResponseAfterTools) sendToLive({ type: 'response.create' });
+        skipResponseAfterTools = false;
+      }
+    }
   };
 
   // ---- GPT-Live 接続 --------------------------------------------------
@@ -236,9 +287,12 @@ export const createBridge = ({ config, connection, call, log, now = () => Date.n
       // バックエンド (responses) のイベントは入れ子で届く
       case 'response.event': {
         const inner = event.event ?? {};
-        if (inner.type === 'response.output_item.done' && inner.item?.type === 'function_call') {
-          // ツールはまだ登録していないので、呼ばれたら結果を返さず記録だけする
-          log.warn({ item: inner.item }, '未実装のツールが呼ばれました');
+        if (
+          inner.type === 'response.output_item.done' &&
+          inner.item?.type === 'function_call' &&
+          inner.item.status === 'completed'
+        ) {
+          runTool(inner.item);
           break;
         }
         log.debug({ inner: inner.type }, 'バックエンドのイベント');

@@ -91,6 +91,9 @@ export const loadConfig = (env = process.env, { warn = () => {} } = {}) => ({
     maxOutputTokens: env.OPENAI_MAX_OUTPUT_TOKENS ? Number(env.OPENAI_MAX_OUTPUT_TOKENS) : null
   },
 
+  // get_weather が使う OpenWeatherMap の API キー
+  openWeatherApiKey: env.OPEN_WEATHER_API_KEY ?? '',
+
   // 会話スタイルの指示 (session.instructions)
   systemMessage: loadTextFile('system-message.txt', DEFAULT_SYSTEM_MESSAGE, warn),
   // 業務ルールの指示 (delegation.responses.instructions)

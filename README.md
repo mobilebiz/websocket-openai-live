@@ -38,6 +38,9 @@ src/
   live/
     session.js               session.start / 挨拶指示の生成
     bridge.js                Vonage ⇔ GPT-Live の中継本体
+  tools/
+    index.js                 ツールレジストリ
+    get-weather.js           get_weather
   audio/
     frames.js                20ms フレームへの切り出し
 system-message.txt           会話スタイルの指示 (session.instructions)
@@ -47,6 +50,20 @@ docs/
   gpt-live-investigation.md  Realtime API との差分調査
 Dockerfile / fly.toml        Fly.io へのデプロイ設定
 ```
+
+### ツールを追加するには
+
+`src/tools/` にモジュールを 1 つ足し、`definition` と `handler` を export したうえで
+`src/tools/index.js` の `MODULES` に追加するだけです。
+OpenAI へ送るツール定義と実行時の振り分けの両方に自動で反映されます。
+
+ツールを呼ぶのは音声モデルではなく**バックエンド (`delegation.responses`) です**。
+そのため定義は `delegation.responses.tools` に載り、
+`system-message.txt` が委譲すると判断したときにだけ呼ばれます。
+
+定義は Responses API の形式です。`strict: true` を付ける場合は
+`additionalProperties: false` と全プロパティの `required` 化が必要になります
+(省略した場合、可能なら API 側が strict 相当に正規化します)。
 
 プロンプトが 2 つあるのは GPT-Live の構造によるものです。
 会話の振る舞いは `system-message.txt`、調べ物や業務ルールは `backend-message.txt` に書きます。
@@ -84,6 +101,7 @@ cp .env.example .env
 `OPENAI_SERVICE_TIER` | | `auto` / `default` / `flex` / `priority`。既定は `priority` (Fast mode)。空にすると指定しない
 `OPENAI_REASONING_EFFORT` | | `minimal` / `low` / `medium` / `high`。既定は `low`。空にすると指定しない
 `OPENAI_MAX_OUTPUT_TOKENS` | | 委譲先の出力上限 (最小 16)。既定は指定なし
+`OPEN_WEATHER_API_KEY` | △ | `get_weather` で使う OpenWeatherMap の API キー。未設定だと、その旨をモデルが読み上げます
 `AUDIO_RATE` | | Vonage と GPT-Live 共通のサンプリングレート。`16000` (既定) か `24000`
 `LOG_LEVEL` | | ログレベル。既定は `info`
 `PORT` | | 待ち受けポート。既定は 3000
@@ -216,6 +234,7 @@ full-duplex のため、相槌のように被せて話し始めると負の値�
 - ツール (Function Calling) — `delegation.responses.tools` に定義を載せ、
   `response.event` の入れ子で届く `function_call` を実行して
   `response.item.create` + `response.create` で返す
+- ツールの追加 (`put_name` / `transfer_call`。転送は Vonage の JWT 生成が必要)
 - `/connect` でのアウトバウンド発信
 - コールドスタートが 5 秒に間に合わない場合の VCR 前段 (`APP_ROLE=front`)
 - ユニットテスト (tap)

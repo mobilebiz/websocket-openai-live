@@ -43,9 +43,12 @@ Realtime API とは**プロトコルが別物**。以下を混同しない。
   `session.commentary.append` で口火を切らせる。
   **指示を足しただけでは話し始めない** (相手が話しかけてくるまで黙ったままになる)。
   `opening` のような専用フィールドは無い
-- ツールは `session.tools` ではなく `delegation.responses.tools`。呼び出しは
-  `response.event` の入れ子で届き、結果は `response.item.create` + `response.create` で返す。
-  保留中の tool call を全部返してから `response.create` すること
+- ツールは `session.tools` ではなく `delegation.responses.tools`。
+  **呼ぶのは音声モデルではなくバックエンド**なので、委譲されたときにしか動かない。
+  呼び出しは `response.event` → 内側の `response.output_item.done` の `item` で届き、
+  結果は `response.item.create` + `response.create` で返す。
+  **保留中の tool call を全部返してから `response.create`** すること
+  (`bridge.js` の `runTool` が実行中の本数を数えて最後の 1 本でだけ再開させている)
 - 終了時は `session.close` を送って `session.closed` を待つ。
   待たずに切ると最終的な利用秒数が確定しない
 
@@ -93,10 +96,21 @@ Webhook URL は Vonage ダッシュボードで設定する。Fly.io のホス�
 ローカル (ngrok) と切り替えるときは手で変える
 (Realtime 版の `scripts/change-url.js` に相当するものはまだ移していない)。
 
+## ツールの追加
+
+`src/tools/` にモジュールを 1 つ足し、`definition` と `handler` を export して
+`src/tools/index.js` の `MODULES` に追加する。ディスパッチの分岐を書き足す必要はない。
+
+定義は Responses API の形式 (`{type:'function', name, description, parameters}`)。
+`strict: true` を付けるなら `additionalProperties: false` と全プロパティの `required` 化、
+任意引数は型に `null` を足す。省略した場合は可能なら API 側が strict 相当に正規化するので、
+引数が単純なうちは付けなくてよい。
+
 ## 未実装
 
-ツール (Function Calling)、`/connect` でのアウトバウンド発信、VCR 前段 (`APP_ROLE=front`)、
-ユニットテスト。Realtime 版には全部あるので、移す際は上記の差分を反映する。
+`put_name` / `transfer_call` (転送は `src/vonage/` の JWT 生成が要る)、
+`/connect` でのアウトバウンド発信、VCR 前段 (`APP_ROLE=front`)、ユニットテスト。
+Realtime 版には全部あるので、移す際は上記の差分を反映する。
 
 ## 実測で分かっていること
 

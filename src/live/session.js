@@ -6,6 +6,8 @@
  * 音声フォーマットは入出力共通で 1 つだけで、セッション途中では変更できない。
  */
 
+import { toolDefinitions } from '../tools/index.js';
+
 /** E.164 らしき番号だけを通し、それ以外は unknown 扱いにする */
 const sanitizeNumber = (value) =>
   /^\+?[0-9]{5,15}$/.test(String(value ?? '')) ? String(value) : 'unknown';
@@ -56,6 +58,9 @@ export const buildSessionStart = (config, call) => ({
       responses: {
         model: config.openai.backendModel,
         instructions: config.backendMessage,
+        // ツールを呼ぶのは音声モデルではなくこのバックエンドなので、
+        // 定義は session.tools ではなくここに載せる
+        ...(toolDefinitions.length > 0 ? { tools: toolDefinitions } : {}),
         tool_choice: 'auto',
         // 委譲した処理の応答速度に効く設定。
         // 電話では待たされた数秒がそのまま体験に響くので既定を遅延寄りにしている
