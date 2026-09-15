@@ -2,7 +2,6 @@
 /.github
 /node_modules
 /docs
-/scripts
 .dockerignore
 Dockerfile
 fly.toml

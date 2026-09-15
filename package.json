@@ -11,7 +11,8 @@
   "scripts": {
     "start": "node index.js",
     "deploy": "fly deploy && node scripts/warmup.js",
-    "warmup": "node scripts/warmup.js"
+    "warmup": "node scripts/warmup.js",
+    "check": "node scripts/check-session.js"
   },
   "dependencies": {
     "@fastify/formbody": "^9.0.0",
